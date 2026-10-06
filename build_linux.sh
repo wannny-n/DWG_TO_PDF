@@ -29,7 +29,7 @@ done
   --onedir \
   --windowed \
   --name DWG_Sheet_Scanner \
-  --add-data "task/GOST2304A.ttf:task" \
+  --add-data "assets/GOST2304A.ttf:assets" \
   --collect-all ezdxf \
   --collect-all pymupdf \
   "${TK_BINARIES[@]}" \

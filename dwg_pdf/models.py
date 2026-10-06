@@ -33,7 +33,7 @@ class RunSettings:
     native_exporter_exe: Optional[Path] = None
     # Путь к ODAFileConverter(.exe). Если поле пусто, программа ищет его через
     # переменную ODA_FILE_CONVERTER и PATH. Это основной бесплатный способ
-    # прочитать закрытый формат DWG без запуска nanoCAD.
+    # прочитать закрытый формат DWG автономно.
     converter_exe: Optional[Path] = None
     # TTF/OTF встраивается в невидимый Unicode-слой для поиска в PDF. Это
     # особенно полезно, когда исходный CAD-шрифт экспортируется кривыми.

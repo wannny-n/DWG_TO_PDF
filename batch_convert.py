@@ -1,7 +1,6 @@
 """Консольный запуск автономного DWG -> PDF.
 
-Скрипт полезен для серверной/пакетной обработки: GUI не требуется, nanoCAD не
-запускается. Промежуточные DXF создаются в системной временной папке и удаляются
+Скрипт полезен для серверной/пакетной обработки: GUI не требуется. Промежуточные DXF создаются в системной временной папке и удаляются
 после каждого DWG.
 """
 
@@ -9,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 from pathlib import Path
 from typing import Sequence
 
@@ -16,6 +16,7 @@ from dwg_pdf.discovery import discover_dwg_files
 from dwg_pdf.headless import HeadlessDwgConverter
 from dwg_pdf.native_oda import NativeOdaPdfExporter
 from dwg_pdf.pdf_check import check_pdf, merge_pdfs
+from dwg_pdf.paths import resource_path
 
 
 def parse_arguments(arguments: Sequence[str] | None = None) -> argparse.Namespace:
@@ -53,6 +54,8 @@ def run(arguments: Sequence[str] | None = None) -> int:
     """Выполняет очередь, сохраняет ход после каждого DWG и возвращает код ОС."""
 
     options = parse_arguments(arguments)
+    if not options.font:
+        options.font = [resource_path("assets", "GOST2304A.ttf")]
     files = discover_dwg_files(
         [item for item in options.sources if item.is_file()],
         [item for item in options.sources if item.is_dir()],
@@ -73,17 +76,19 @@ def run(arguments: Sequence[str] | None = None) -> int:
         converter = NativeOdaPdfExporter(options.native_exporter, options.font, log, timeout_seconds=900)
         engine = "native ODA Drawings SDK PDF exporter"
     else:
-        log("Бесплатный векторный экспорт без nanoCAD")
+        log("Бесплатный векторный экспорт")
         converter = HeadlessDwgConverter(options.oda, options.font, log, timeout_seconds=900)
         engine = "free ODA File Converter + ezdxf + PyMuPDF"
     converter.validate()
+    temporary = tempfile.TemporaryDirectory(prefix="dwg_pdf_merge_") if options.merge else None
+    work_dir = Path(temporary.name) if temporary else output_dir
     progress: list[dict[str, object]] = []
     for position, source in enumerate(files, 1):
         entry: dict[str, object] = {"position": position, "source": str(source), "status": "error"}
         try:
             result = converter.convert(
                 source,
-                output_path(output_dir, source, options.overwrite),
+                output_path(work_dir, source, options.overwrite),
                 include_model_frames=not options.no_model_frames,
                 include_layouts=not options.no_layouts,
             )
@@ -91,7 +96,8 @@ def run(arguments: Sequence[str] | None = None) -> int:
             if not validation.valid:
                 raise RuntimeError(validation.message)
             entry.update(
-                status="ok" if validation.text_found else "warning",
+                status="ok" if validation.text_found and not getattr(result, "warnings", ()) else "warning",
+                rendering_warnings=list(getattr(result, "warnings", ())),
                 output_pdf=str(result.output_pdf),
                 sheets=result.sheet_count,
                 formats=list(result.formats),
@@ -114,10 +120,15 @@ def run(arguments: Sequence[str] | None = None) -> int:
     if options.merge and successful_pdfs:
         combined_pdf = output_dir / "DWG_Combined_autonomous.pdf"
         merge_pdfs(successful_pdfs, combined_pdf)
+        for entry in progress:
+            if entry["status"] in {"ok", "warning"}:
+                entry["output_pdf"] = str(combined_pdf)
+    if temporary:
+        temporary.cleanup()
+    progress_path.write_text(json.dumps(progress, ensure_ascii=False, indent=2), encoding="utf-8")
 
     report = {
         "engine": engine,
-        "nanocad_used": False,
         "total_dwg": len(files),
         "succeeded": sum(item["status"] == "ok" for item in progress),
         "warnings": sum(item["status"] == "warning" for item in progress),

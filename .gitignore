@@ -5,18 +5,16 @@ build/
 dist/
 release/
 output/
-*.spec
 *.dwl
 *.dwl2
 ~$*
 
 # Локальные входные материалы и проверки не публикуются в репозитории.
-task/Тестовые/
+task/
+Тестовые/
 tests/
-task/DwgSheetDetector_NanoCAD51_VS2017_v3/
-task/UI_INTERFACE_EXAPLE.jpg
-
-# Сборочные файлы legacy-плагина nanoCAD не являются исходным кодом.
-task/DwgSheetDetector_NanoCAD51_VS2017_v3/bin/
-task/DwgSheetDetector_NanoCAD51_VS2017_v3/obj/
-task/DwgSheetDetector_NanoCAD51_VS2017_v3/dist/
+verification/
+*.dwg
+*.dxf
+*.pdf
+*.zip

@@ -41,7 +41,7 @@ dist\DWG_Sheet_Scanner\DWG_Sheet_Scanner.exe
 3. После установки вернитесь в программу и нажмите **Найти установленный ODA**.
 4. Поле `ODA File Converter` должно заполниться путём к `ODAFileConverter.exe`.
 
-ODA скачивается с официального сайта по HTTPS. nanoCAD не нужен.
+ODA скачивается с официального сайта по HTTPS.
 
 ## 5. Первый экспорт
 

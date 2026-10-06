@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
+import tempfile
 
 from .models import PdfCheck
 
@@ -16,26 +18,67 @@ def check_pdf(path: Path) -> PdfCheck:
 
     if not path.is_file() or path.stat().st_size < 8:
         return PdfCheck(False, message="PDF не создан или имеет нулевой размер")
-    if path.read_bytes()[:5] != b"%PDF-":
+    with path.open("rb") as stream:
+        signature = stream.read(5)
+    if signature != b"%PDF-":
         return PdfCheck(False, message="Файл не начинается с сигнатуры PDF")
 
     try:
-        from pypdf import PdfReader
+        import pymupdf
     except ImportError:
-        return PdfCheck(True, message="PDF создан; для проверки текста установите pypdf")
+        pymupdf = None
 
     try:
-        reader = PdfReader(str(path))
-        pages = len(reader.pages)
-        text_found = any((page.extract_text() or "").strip() for page in reader.pages)
+        if pymupdf is not None:
+            with pymupdf.open(path) as document:
+                pages = len(document)
+                text_found = any(page.get_text().strip() for page in document)
+        else:
+            from pypdf import PdfReader
+            reader = PdfReader(str(path))
+            pages = len(reader.pages)
+            text_found = any((page.extract_text() or "").strip() for page in reader.pages)
+        if pages == 0:
+            return PdfCheck(False, message="PDF не содержит страниц")
         text_message = "текст найден" if text_found else "не найден извлекаемый текст"
         return PdfCheck(True, pages=pages, text_found=text_found, message=f"PDF корректен, {text_message}")
     except Exception as error:  # Библиотека возвращает разные классы ошибок по версиям.
         return PdfCheck(False, message=f"PDF не удалось разобрать: {error}")
 
 
-def merge_pdfs(inputs: list[Path], destination: Path) -> None:
+def merge_pdfs(inputs: list[Path], destination: Path,
+               progress: Callable[[float, str], None] | None = None) -> None:
     """Склеивает уже готовые PDF без повторной печати и растеризации."""
+
+    # MuPDF copies PDF objects without interpreting thousands of CAD paths.
+    # Preserve vector content and text and create the same per-DWG bookmarks.
+    try:
+        import pymupdf
+    except ImportError:
+        pymupdf = None
+    if pymupdf is not None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix=".dwg_merge_", suffix=".pdf", dir=destination.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+        try:
+            with pymupdf.open() as output:
+                bookmarks = []
+                for index, source in enumerate(inputs):
+                    if progress:
+                        progress(index / max(1, len(inputs)) * 90, f"Объединение PDF: {index + 1}/{len(inputs)}")
+                    bookmarks.append([1, source.stem, len(output) + 1])
+                    with pymupdf.open(source) as document:
+                        output.insert_pdf(document)
+                output.set_toc(bookmarks)
+                if progress:
+                    progress(95, "Сохранение общего PDF")
+                output.save(temporary, garbage=3, deflate=True)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        if progress:
+            progress(100, "Общий PDF создан")
+        return
 
     try:
         from pypdf import PdfReader, PdfWriter

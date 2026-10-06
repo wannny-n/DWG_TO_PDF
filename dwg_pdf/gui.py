@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
+from dataclasses import replace
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -40,17 +42,23 @@ class App(ttk.Frame):
         self._folders: list[Path] = []
         self._events: queue.Queue[tuple[str, object]] = queue.Queue()
         self._running = False
+        self._scanning = False
+        self._scan_generation = 0
+        self._queued_sources: list[Path] = []
+        self._run_started = 0.0
+        self._stage = "Готово к запуску"
 
-        self.output_dir = tk.StringVar(value=str(Path.cwd() / "output"))
+        default_output = Path.home() / "Documents" / "DWG_PDF"
+        self.output_dir = tk.StringVar(value=str(default_output))
         detected_converter = find_installed_converter()
         self.converter_exe = tk.StringVar(value=str(detected_converter) if detected_converter else "")
         # Ресурс включается в Linux- и Windows-сборки. Он не зависит от того,
         # из какой папки пользователь запустил приложение.
-        self.font_file = tk.StringVar(value=str(resource_path("task", "GOST2304A.ttf")))
+        self.font_file = tk.StringVar(value=str(resource_path("assets", "GOST2304A.ttf")))
         self.include_model = tk.BooleanVar(value=True)
         self.include_layouts = tk.BooleanVar(value=True)
         self.merge = tk.BooleanVar(value=True)
-        self.combined_pdf = tk.StringVar(value=str(Path.cwd() / "output" / "All_Selected_DWG.pdf"))
+        self.combined_pdf = tk.StringVar(value=str(default_output / "All_Selected_DWG.pdf"))
 
         self._build_settings()
         self._build_queue()
@@ -80,7 +88,7 @@ class App(ttk.Frame):
         self.detect_oda_button.pack(side="left", padx=6)
         ttk.Label(
             group,
-            text="nanoCAD не запускается и не требуется. Для точных надписей добавьте исходные TTF/SHX.",
+            text="Для точных надписей добавьте исходные TTF/SHX.",
         ).grid(row=5, column=1, sticky="w")
         ttk.Checkbutton(group, text="Искать рамки в ModelSpace", variable=self.include_model).grid(row=6, column=1, sticky="w")
         ttk.Checkbutton(group, text="Печатать готовые Layout", variable=self.include_layouts).grid(row=7, column=1, sticky="w")
@@ -116,24 +124,44 @@ class App(ttk.Frame):
         self.start_button.pack(side="left")
         self.status = tk.StringVar(value="Добавьте DWG или папку с DWG")
         ttk.Label(group, textvariable=self.status).pack(side="left", padx=12)
+        progress_row = ttk.Frame(self, padding=(0, 6, 0, 6))
+        progress_row.grid(row=4, column=0, sticky="ew")
+        self.progress_value = tk.DoubleVar(value=0)
+        self.progress_canvas = tk.Canvas(progress_row, width=200, height=8, bg="#e3e9e4",
+                                         highlightthickness=0)
+        self.progress_canvas.pack(side="left")
+        self._progress_fill = self.progress_canvas.create_rectangle(0, 0, 0, 8, fill="#34a853", outline="")
+        self.progress_text = tk.StringVar(value="0%")
+        ttk.Label(progress_row, textvariable=self.progress_text, foreground="#278542", width=5).pack(side="left", padx=(6, 8))
+        self.progress_stage = tk.StringVar(value=self._stage)
+        ttk.Label(progress_row, textvariable=self.progress_stage).pack(side="left")
         self.log = tk.Text(self, height=6, wrap="word", state="disabled")
-        self.log.grid(row=4, column=0, sticky="ew")
+        self.log.grid(row=5, column=0, sticky="ew")
 
     def _choose_files(self) -> None:
+        if self._running:
+            return
         selected = filedialog.askopenfilenames(title="Выберите DWG", filetypes=[("DWG", "*.dwg")])
         self._files.extend(Path(item) for item in selected)
         self._refresh_queue()
 
     def _choose_folder(self) -> None:
+        if self._running:
+            return
         selected = filedialog.askdirectory(title="Выберите папку с DWG")
         if selected:
             self._folders.append(Path(selected))
+            self.merge.set(True)
         self._refresh_queue()
 
     def _choose_output(self) -> None:
         selected = filedialog.askdirectory(title="Папка результата")
         if selected:
+            previous_output = Path(self.output_dir.get())
+            combined = Path(self.combined_pdf.get())
             self.output_dir.set(selected)
+            if combined.parent == previous_output:
+                self.combined_pdf.set(str(Path(selected) / combined.name))
 
     def _choose_converter(self) -> None:
         selected = filedialog.askopenfilename(
@@ -213,20 +241,47 @@ class App(ttk.Frame):
         self._refresh_queue()
 
     def _sources(self) -> list[Path]:
-        return discover_dwg_files(self._files, self._folders)
+        return list(self._queued_sources)
 
     def _refresh_queue(self) -> None:
         if self._running:
             return
+        self._scan_generation += 1
+        generation = self._scan_generation
+        files, folders = tuple(self._files), tuple(self._folders)
+        self._scanning = True
+        self._run_started = time.monotonic()
+        self.start_button.state(["disabled"])
+        self.status.set("Поиск DWG…")
+        self._set_progress(0, "Поиск DWG в выбранных папках")
+        def scan() -> None:
+            try:
+                self._events.put(("sources", (generation, discover_dwg_files(files, folders))))
+            except Exception as error:
+                self._events.put(("scan_error", (generation, str(error))))
+        threading.Thread(target=scan, daemon=True).start()
+
+    def _show_sources(self, generation: int, sources: list[Path]) -> None:
+        if generation != self._scan_generation:
+            return
+        self._queued_sources = sources
+        self._scanning = False
+        self.start_button.state(["!disabled"])
         self.tree.delete(*self.tree.get_children())
-        for index, source in enumerate(self._sources(), 1):
+        for index, source in enumerate(sources, 1):
             self.tree.insert("", "end", iid=str(source), values=(index, source.name, str(source.parent), JobStatus.QUEUED.value, "", "", "Ожидает запуска"))
-        self.status.set(f"В очереди: {len(self._sources())} DWG")
+        self.status.set(f"В очереди: {len(sources)} DWG")
+        self._set_progress(0, "Готово к запуску")
 
     def _start(self) -> None:
+        if self._running or self._scanning:
+            return
         sources = self._sources()
         if not sources:
             messagebox.showwarning("Нет файлов", "Добавьте хотя бы один DWG-файл или папку с DWG.")
+            return
+        if not self.include_model.get() and not self.include_layouts.get():
+            messagebox.showwarning("Не выбраны листы", "Включите поиск рамок или печать Layout.")
             return
         settings = RunSettings(
             output_dir=Path(self.output_dir.get()).expanduser(),
@@ -239,6 +294,8 @@ class App(ttk.Frame):
             combined_pdf=Path(self.combined_pdf.get()).expanduser(),
         )
         self._running = True
+        self._run_started = time.monotonic()
+        self._set_progress(0, "Подготовка")
         self.start_button.state(["disabled"])
         self.status.set("Идёт обработка…")
         threading.Thread(target=self._run_worker, args=(settings, sources), daemon=True).start()
@@ -248,31 +305,49 @@ class App(ttk.Frame):
             self._events.put(("log", text))
 
         def changed(job: ConversionJob) -> None:
-            self._events.put(("job", job))
+            self._events.put(("job", replace(job)))
+
+        def progress(percent: float, stage: str) -> None:
+            self._events.put(("progress", (percent, stage)))
 
         try:
-            summary = ConversionService(settings, log, changed).run(sources)
+            summary = ConversionService(settings, log, changed, progress).run(sources)
             self._events.put(("done", summary))
         except Exception as error:
             self._events.put(("fatal", str(error)))
 
     def _drain_events(self) -> None:
         try:
-            while True:
+            # A busy worker must not monopolize Tk's event loop with updates.
+            for _ in range(100):
                 kind, value = self._events.get_nowait()
                 if kind == "log":
                     self._append_log(str(value))
                 elif kind == "job":
                     self._show_job(value)  # type: ignore[arg-type]
+                elif kind == "progress":
+                    self._set_progress(*value)
+                elif kind == "sources":
+                    self._show_sources(*value)
+                elif kind == "scan_error":
+                    generation, detail = value
+                    if generation == self._scan_generation:
+                        self._scanning = False
+                        self.start_button.state(["!disabled"])
+                        self.status.set("Не удалось прочитать папку")
+                        self._set_progress(0, str(detail))
+                        self._append_log(str(detail))
                 elif kind == "done":
                     self._running = False
                     self.start_button.state(["!disabled"])
                     summary = value
                     self.status.set(f"Готово: {summary.succeeded}; предупреждений: {summary.warnings}; ошибок: {summary.failed}")
+                    self._set_progress(100, "Обработка завершена")
                 elif kind == "fatal":
                     self._running = False
                     self.start_button.state(["!disabled"])
                     self.status.set("Запуск не выполнен")
+                    self._stage = "Обработка остановлена"
                     self._append_log(str(value))
                     messagebox.showerror("Не удалось запустить", str(value))
                 elif kind == "oda_downloaded":
@@ -283,7 +358,24 @@ class App(ttk.Frame):
                     messagebox.showerror("Не удалось скачать ODA", str(value))
         except queue.Empty:
             pass
+        if self._running or self._scanning:
+            elapsed = int(time.monotonic() - self._run_started)
+            dots = "." * (elapsed % 3 + 1)
+            self.progress_stage.set(f"{self._stage}{dots}  {elapsed // 60}:{elapsed % 60:02d}")
+            self.progress_canvas.itemconfigure(self._progress_fill,
+                                              fill="#34a853" if elapsed % 2 else "#48b86a")
+        else:
+            self.progress_stage.set(self._stage)
+            self.progress_canvas.itemconfigure(self._progress_fill, fill="#34a853")
         self.after(100, self._drain_events)
+
+    def _set_progress(self, percent: float, stage: str) -> None:
+        percent = max(0.0, min(100.0, percent))
+        self.progress_value.set(percent)
+        self.progress_text.set(f"{int(percent)}%")
+        self.progress_canvas.coords(self._progress_fill, 0, 0, 2 * percent, 8)
+        self._stage = stage
+        self.progress_stage.set(stage)
 
     def _show_oda_download_result(self, result: OdaDownloadResult) -> None:
         """Подключает Linux AppImage или передаёт MSI штатному установщику Windows."""

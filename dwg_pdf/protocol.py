@@ -1,4 +1,4 @@
-"""XML-контракт между Python-оболочкой и плагином nanoCAD.
+"""Устаревший XML-контракт заданий экспорта.
 
 XML выбран вместо командной строки, чтобы пробелы и кириллица в путях не теряли
 смысл, а результат можно было приложить к журналу приёмки.
@@ -24,7 +24,7 @@ class NativeResult:
 
 def write_job_xml(source: Path, output_pdf: Path, result_xml: Path, *, plotter: str,
                   include_model_frames: bool, include_layouts: bool) -> None:
-    """Создаёт атомарный файл задания для одной активной вкладки nanoCAD."""
+    """Создаёт атомарный файл задания экспорта."""
 
     root = ET.Element("dwgPdfJob", {"version": "1"})
     ET.SubElement(root, "source", {"path": str(source)})

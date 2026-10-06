@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -134,6 +135,13 @@ def find_installed_converter(system: str | None = None, home: Path | None = None
             root = os.environ.get(root_name)
             if root:
                 candidates.append(Path(root) / "ODA" / "ODAFileConverter" / "ODAFileConverter.exe")
+                oda_root = Path(root) / "ODA"
+                if oda_root.is_dir():
+                    candidates.extend(sorted(
+                        oda_root.glob("ODAFileConverter*/ODAFileConverter.exe"),
+                        key=lambda path: tuple(int(part) for part in re.findall(r"\d+", path.parent.name)),
+                        reverse=True,
+                    ))
 
     for candidate in candidates:
         if candidate.is_file():

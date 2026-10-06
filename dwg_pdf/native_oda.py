@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import subprocess
 from typing import Callable, Iterable
@@ -54,7 +55,7 @@ class NativeOdaPdfExporter:
         if not self._exporter_exe or not self._exporter_exe.is_file():
             raise FileNotFoundError(
                 "Для production-экспорта укажите dwg_native_pdf_exporter, "
-                "собранный с ODA Drawings SDK. nanoCAD не требуется."
+                "собранный с ODA Drawings SDK."
             )
         for font in self._font_files:
             if not font.is_file():
@@ -100,6 +101,8 @@ class NativeOdaPdfExporter:
             text=True,
             timeout=self._timeout_seconds,
             check=False,
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "нет диагностического сообщения").strip()

@@ -1,4 +1,4 @@
-"""Пакет оболочки для пакетной печати DWG средствами nanoCAD 5.1."""
+"""Автономное пакетное преобразование DWG в PDF."""
 
 from .models import JobStatus, RunSettings
 
