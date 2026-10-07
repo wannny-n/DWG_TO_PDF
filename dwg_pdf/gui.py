@@ -84,7 +84,7 @@ class App(ttk.Frame):
         oda_controls.grid(row=4, column=1, sticky="w", pady=(6, 0))
         self.download_oda_button = ttk.Button(oda_controls, text="Скачать ODA для этой ОС", command=self._download_oda)
         self.download_oda_button.pack(side="left")
-        self.detect_oda_button = ttk.Button(oda_controls, text="Найти установленный ODA", command=self._detect_oda)
+        self.detect_oda_button = ttk.Button(oda_controls, text="Найти ODA", command=self._detect_oda)
         self.detect_oda_button.pack(side="left", padx=6)
         ttk.Label(
             group,

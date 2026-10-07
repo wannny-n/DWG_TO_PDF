@@ -1,7 +1,7 @@
 """Загрузка и обнаружение ODA File Converter на Windows и Linux.
 
-ODA не встраивается в дистрибутив приложения: скачивание происходит только
-после явного нажатия кнопки пользователя и только по HTTPS с сайта ODA.
+Переносимый ODA ищется рядом с приложением. Дополнительное скачивание
+происходит по кнопке пользователя и только по HTTPS с сайта ODA.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from typing import Callable
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -107,10 +108,20 @@ def launch_windows_installer(installer: Path) -> None:
 
 
 def find_installed_converter(system: str | None = None, home: Path | None = None) -> Path | None:
-    """Ищет ODA в PATH, стандартных папках и пользовательском AppImage."""
+    """Ищет переносимый ODA рядом с приложением, затем установленный ODA."""
 
     actual_system = system or platform.system()
     candidates: list[Path] = []
+    from .paths import resource_path
+
+    # Use the executable directory, never the process working directory:
+    # shortcuts and network shares may launch the app from another folder.
+    roots = [Path(sys.executable).resolve().parent] if getattr(sys, "frozen", False) else []
+    roots.append(resource_path())
+    executable_name = "ODAFileConverter.exe" if actual_system == "Windows" else "ODAFileConverter"
+    for root in roots:
+        candidates.append(root / "ODA" / executable_name)
+        candidates.extend(sorted((root / "ODA").glob(f"ODAFileConverter*/{executable_name}"), reverse=True))
     environment_path = os.environ.get("ODA_FILE_CONVERTER")
     if environment_path:
         candidates.append(Path(environment_path))
