@@ -92,6 +92,11 @@ class HeadlessDwgConverter:
         self._text_range = (65.0, 15.0)
         self._sheet_label = ""
 
+    def _warn(self, message: str) -> None:
+        if message not in self._warnings:
+            self._warnings.append(message)
+            self._log(message)
+
     def _report(self, percent: float, stage: str) -> None:
         if self._progress is None:
             return
@@ -141,6 +146,8 @@ class HeadlessDwgConverter:
             dxf_path = self._convert_to_dxf(source, Path(temporary))
             self._report(8, "Загрузка чертежа")
             document = ezdxf.readfile(dxf_path)
+            from .embedded import prepare_proxy_entities
+            prepare_proxy_entities(document, self._warn)
             self._report(15, "Поиск листов и рамок")
             sheets = self._detect_sheets(document, include_model_frames, include_layouts, ezdxf)
             if not sheets:
@@ -496,6 +503,29 @@ class HeadlessDwgConverter:
                     if warning not in converter._warnings:
                         converter._warnings.append(warning)
                         converter._log(warning)
+
+            def draw_ole2frame_entity(self, entity: Any, properties: Any) -> None:
+                from .embedded import ole_image
+                from ezdxf.addons.drawing.backend import ImageData
+                from ezdxf.math import Matrix44, Vec2
+                from ezdxf.npshapes import NumpyPoints2d
+                import numpy as np
+
+                box = entity.bbox()
+                if not box.has_data or box.size.x <= 0 or box.size.y <= 0:
+                    return
+                try:
+                    image = ole_image(entity.binary_data())
+                except (OSError, ValueError) as error:
+                    converter._warn(f'Встроенное OLE-изображение {entity.dxf.handle} не удалось прочитать: {error}')
+                    return
+                width, height = image.size
+                transform = Matrix44.scale(box.size.x / width, box.size.y / height, 1)
+                transform @= Matrix44.translate(box.extmin.x, box.extmin.y, 0)
+                self.pipeline.draw_image(ImageData(
+                    image=np.array(image), transform=transform,
+                    pixel_boundary_path=NumpyPoints2d(Vec2.generate([(0, 0), (width, 0), (width, height), (0, height), (0, 0)])),
+                ), properties)
 
         frontend = ExportFrontend(
             context,

@@ -392,7 +392,7 @@ class App(ttk.Frame):
             return
         messagebox.showinfo(
             "Установите ODA",
-            "Установщик ODA открыт. После завершения нажмите «Найти установленный ODA».",
+            "Установщик ODA открыт. После завершения нажмите «Найти ODA».",
         )
 
     def _finish_oda_download(self) -> None:
