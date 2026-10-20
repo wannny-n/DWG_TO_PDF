@@ -42,6 +42,7 @@ class ConversionService:
                 settings.wait_timeout_seconds,
                 progress=self._engine_progress,
             )
+            self._runner.selected_sheets = settings.selected_sheets
         else:
             self._runner = NativeOdaPdfExporter(
                 settings.native_exporter_exe,
@@ -105,6 +106,10 @@ class ConversionService:
 
         output_pdf = self._unique_output_path(job.source)
         try:
+            if self._settings.selected_sheets.get(str(job.source.resolve())) == ():
+                job.status = JobStatus.SKIPPED
+                job.message = 'Все листы исключены из печати'
+                return
             result = self._runner.convert(
                 job.source,
                 output_pdf,

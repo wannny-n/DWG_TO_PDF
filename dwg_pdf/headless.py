@@ -91,6 +91,8 @@ class HeadlessDwgConverter:
         self._render_range = (25.0, 40.0)
         self._text_range = (65.0, 15.0)
         self._sheet_label = ""
+        self._text_runs: dict[int, list[Any]] = {}
+        self.selected_sheets: dict[str, tuple[int, ...]] = {}
 
     def _warn(self, message: str) -> None:
         if message not in self._warnings:
@@ -139,6 +141,7 @@ class HeadlessDwgConverter:
         ezdxf, pymupdf, drawing = self._dependencies()
         self._warnings: list[str] = []
         self._page_transforms.clear()
+        self._text_runs.clear()
         self._bbox_cache = drawing["bbox"].Cache()
         self._context = None
         with tempfile.TemporaryDirectory(prefix="dwg_pdf_") as temporary:
@@ -150,13 +153,18 @@ class HeadlessDwgConverter:
             prepare_proxy_entities(document, self._warn)
             self._report(15, "Поиск листов и рамок")
             sheets = self._detect_sheets(document, include_model_frames, include_layouts, ezdxf)
+            selection = self.selected_sheets.get(str(source.resolve()))
+            if selection is not None:
+                if any(index < 1 or index > len(sheets) for index in selection):
+                    raise ValueError('Набор листов изменился. Повторите выбор листов.')
+                sheets = [sheets[index-1] for index in selection]
             if not sheets:
                 raise RuntimeError(
                     "Не найдены листы: в DWG нет Layout и не распознаны рамки ModelSpace"
                 )
 
             self._report(18, "Подготовка текста")
-            search_items = self._collect_search_items(document, drawing)
+            search_items: list[_SearchText] = []
             self._report(25, f"Найдено листов: {len(sheets)}")
             rendered_sheets: list[_Sheet] = []
             pdf_document = pymupdf.open()
@@ -178,7 +186,7 @@ class HeadlessDwgConverter:
                     rendered_page = pymupdf.open(stream=page_bytes, filetype="pdf")
                     try:
                         self._report(base + portion * 0.8, f"{self._sheet_label} — поисковый текст")
-                        page_items = self._sheet_search_items(search_items, sheet, document, drawing)
+                        page_items = search_items
                         self._append_search_layer(rendered_page[0], page_items, sheet)
                         # PyMuPDF может переиспользовать имя встроенного шрифта
                         # при копировании изменённой страницы прямо в общий
@@ -249,8 +257,17 @@ class HeadlessDwgConverter:
     def _convert_to_dxf(self, source: Path, temporary_dir: Path) -> Path:
         """Запускает ODA только для одного файла и находит созданный DXF."""
 
+        converter = self._converter_path()
+        import hashlib
+        source_stat, converter_stat = source.stat(), converter.stat()
+        key = hashlib.sha256(f'{source.resolve()}|{source_stat.st_size}|{source_stat.st_mtime_ns}|{converter}|{converter_stat.st_mtime_ns}'.encode()).hexdigest()
+        cache_dir = Path(os.environ.get('LOCALAPPDATA',str(Path.home()/'.cache'))) / 'DWG_Sheet_Scanner' / 'dxf_cache'
+        cached = cache_dir / f'{key}.dxf'
+        if cached.is_file():
+            self._log(f'Чтение из кеша: {source.name}')
+            return cached
         command = [
-            str(self._converter_path()),
+            str(converter),
             str(source.parent),
             str(temporary_dir),
             "ACAD2013",
@@ -279,7 +296,30 @@ class HeadlessDwgConverter:
             dxf_files = list(temporary_dir.rglob("*.dxf"))
         if len(dxf_files) != 1:
             raise RuntimeError(f"ODA File Converter не создал однозначный DXF для {source.name}")
+        try:
+            cache_dir.mkdir(parents=True,exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=cache_dir,suffix='.part',delete=False) as stream:
+                staging = Path(stream.name)
+            try:
+                shutil.copyfile(dxf_files[0],staging)
+                staging.replace(cached)
+            finally:
+                staging.unlink(missing_ok=True)
+        except OSError:
+            pass
         return dxf_files[0]
+
+    def inspect_sheets(self, source: Path, include_model_frames=True, include_layouts=True) -> list[dict[str, Any]]:
+        ezdxf,_,drawing = self._dependencies()
+        with tempfile.TemporaryDirectory(prefix='dwg_catalog_') as temporary:
+            doc = ezdxf.readfile(self._convert_to_dxf(source,Path(temporary)))
+            from .embedded import prepare_proxy_entities
+            prepare_proxy_entities(doc,self._warn)
+            self._bbox_cache = drawing['bbox'].Cache()
+            sheets = self._detect_sheets(doc,include_model_frames,include_layouts,ezdxf)
+            return [dict(number=i,title=s.title,format=s.format_name,width=s.width_mm,height=s.height_mm,
+                         model=s.layout is None,box=(s.frame.extmin.x,s.frame.extmin.y,s.frame.extmax.x,s.frame.extmax.y))
+                    for i,s in enumerate(sheets,1)]
 
     def _dependencies(self) -> tuple[Any, Any, dict[str, Any]]:
         """Откладывает импорт тяжёлых библиотек до фактического запуска."""
@@ -366,7 +406,8 @@ class HeadlessDwgConverter:
                     )
 
         if include_model_frames:
-            sheets.extend(self._model_frame_sheets(document, ezdxf, self._layout_format_hint(document)))
+            sheets.extend(self._model_frame_sheets(document, ezdxf, self._layout_format_hint(document),
+                                                   allow_saved_window=not sheets))
         return sheets
 
     @staticmethod
@@ -380,6 +421,7 @@ class HeadlessDwgConverter:
         document: Any,
         ezdxf: Any,
         fallback_format: str | None,
+        allow_saved_window: bool = True,
     ) -> list[_Sheet]:
         """Ищет рамки вида ``... ЛИСТ ... A2 ...`` без догадок по масштабу."""
 
@@ -397,7 +439,7 @@ class HeadlessDwgConverter:
                 # Layout чертежа называется A4 и надёжно задаёт формат.
                 format_name = fallback_format
             else:
-                continue
+                format_name = None
             try:
                 box = ezdxf.bbox.extents([insert], fast=False, cache=self._bbox_cache)
                 width = float(box.extmax.x - box.extmin.x)
@@ -406,6 +448,13 @@ class HeadlessDwgConverter:
                 continue
             if width <= 1 or height <= 1:
                 continue
+            if named_format is None:
+                from .print_regions import paper_dimensions
+                inferred = paper_dimensions(width, height, self._PAPER_SIZES)
+                if inferred is not None:
+                    format_name = inferred[0]
+                elif format_name is None:
+                    continue
             signature = tuple(round(value) for value in (box.extmin.x, box.extmin.y, box.extmax.x, box.extmax.y))
             if signature in seen:
                 continue
@@ -424,7 +473,52 @@ class HeadlessDwgConverter:
                     ),
                 )
             )
-        return [sheet for _, _, sheet in sorted(frames)]
+        from .print_regions import loose_rectangles, polyline_regions, paper_dimensions, saved_model_window
+        from ezdxf.math import BoundingBox2d
+        model = document.modelspace()
+        def add_box(coords, title):
+            x1,y1,x2,y2 = coords
+            signature = tuple(round(v) for v in coords)
+            if signature in seen:
+                return
+            size = paper_dimensions(x2-x1,y2-y1,self._PAPER_SIZES)
+            if size is None:
+                return
+            seen.add(signature)
+            name,(width,height) = size
+            frames.append((-y2,x1,_Sheet(title,width,height,name,
+                                         frame=BoundingBox2d([(x1,y1),(x2,y2)]))))
+        for coords,title in loose_rectangles(model):
+            add_box(coords,title)
+        regions = list(polyline_regions(model))
+        for coords,layer in regions:
+            if layer.upper() not in ('PDF_PRINT','ПЕЧАТЬ_PDF'):
+                add_box(coords, 'Рамка-полилиния')
+        for entity in model.query('ACAD_PROXY_ENTITY'):
+            if any(marker in entity.dxf.layer.upper() for marker in ('ФОРМАТ','РАМК','FRAME','SHEET')):
+                box = ezdxf.bbox.extents([entity],cache=self._bbox_cache)
+                if box.has_data:
+                    add_box((box.extmin.x,box.extmin.y,box.extmax.x,box.extmax.y),'Рамка proxy')
+        if not frames and allow_saved_window:
+            saved = saved_model_window(document)
+            if saved:
+                box,width,height = saved
+                frames.append((-box.extmax.y,box.extmin.x,_Sheet('Область печати модели',width,height,
+                              self.page_format(width,height),frame=box)))
+        result = [sheet for _,_,sheet in sorted(frames,key=lambda entry: entry[:2])]
+        selections = [coords for coords,layer in regions if layer.upper() in ('PDF_PRINT','ПЕЧАТЬ_PDF')]
+        if selections:
+            chosen = []
+            for coords in selections:
+                region = BoundingBox2d([(coords[0],coords[1]),(coords[2],coords[3])])
+                matches = [s for s in result if region.inside(s.frame.center)]
+                if matches:
+                    chosen.extend(s for s in matches if s not in chosen)
+                else:
+                    width,height = coords[2]-coords[0],coords[3]-coords[1]
+                    chosen.append(_Sheet('Область PDF_PRINT',width,height,self.page_format(width,height),frame=region))
+            return chosen
+        return result
 
     def _layout_format_hint(self, document: Any) -> str | None:
         """Берёт единственный стандартный формат из Layout как подсказку рамке."""
@@ -511,7 +605,7 @@ class HeadlessDwgConverter:
                 from ezdxf.npshapes import NumpyPoints2d
                 import numpy as np
 
-                box = entity.bbox()
+                box = getattr(entity,'_pdf_ole_box',None) or entity.bbox()
                 if not box.has_data or box.size.x <= 0 or box.size.y <= 0:
                     return
                 try:
@@ -522,6 +616,8 @@ class HeadlessDwgConverter:
                 width, height = image.size
                 transform = Matrix44.scale(box.size.x / width, box.size.y / height, 1)
                 transform @= Matrix44.translate(box.extmin.x, box.extmin.y, 0)
+                if hasattr(entity,'_pdf_ole_matrix'):
+                    transform @= entity._pdf_ole_matrix
                 self.pipeline.draw_image(ImageData(
                     image=np.array(image), transform=transform,
                     pixel_boundary_path=NumpyPoints2d(Vec2.generate([(0, 0), (width, 0), (width, height), (0, height), (0, 0)])),
@@ -537,6 +633,10 @@ class HeadlessDwgConverter:
             ),
             bbox_cache=self._bbox_cache,
         )
+        from .pdf_text import capture_text
+        self._text_runs[id(sheet)] = []
+        fallback = next((f for f in self._font_files if f.suffix.lower() in ('.ttf','.otf')),self._fallback_font())
+        capture_text(frontend.pipeline, sheet, self._text_runs[id(sheet)],fallback)
         page = drawing["layout"].Page(sheet.width_mm, sheet.height_mm)
         settings = drawing["layout"].Settings(content_rotation=sheet.rotation, crop_at_margins=True)
         if sheet.layout is not None:
@@ -564,6 +664,8 @@ class HeadlessDwgConverter:
         # Отсеиваем сущности вне её до построения векторных путей: это заметно
         # ускоряет альбомы и не меняет содержимое выбранного листа.
         def intersects_sheet(entity: Any) -> bool:
+            if entity.dxf.layer.upper() in ('PDF_PRINT','ПЕЧАТЬ_PDF'):
+                return False
             try:
                 entity_box = drawing["bbox"].extents([entity], fast=True, cache=self._bbox_cache)
                 if not entity_box.has_data:
@@ -609,7 +711,7 @@ class HeadlessDwgConverter:
         """
 
         if not self._font_files:
-            return drawing["RenderContext"](document)
+            return drawing["RenderContext"](document, export_mode=True)
 
         font_manager = drawing["fonts"].font_manager
         # Важно регистрировать TTF/SHX *до* создания RenderContext. Контекст
@@ -621,7 +723,7 @@ class HeadlessDwgConverter:
                 font_manager.scan_folder(folder)
             self._fonts_registered = True
 
-        context = drawing["RenderContext"](document)
+        context = drawing["RenderContext"](document, export_mode=True)
 
         faces: dict[str, Any] = {}
         for font in self._font_files:
@@ -719,7 +821,7 @@ class HeadlessDwgConverter:
         if sheet.layout is None:
             return [item for item in items if item.scope == "Model"]
         result = [item for item in items if item.scope == sheet.layout.name]
-        context = self._context or drawing["RenderContext"](document)
+        context = self._context or drawing["RenderContext"](document, export_mode=True)
         for viewport in sheet.layout.query("VIEWPORT"):
             if not self._printable_viewport(viewport) or not viewport.is_top_view:
                 continue
@@ -745,6 +847,10 @@ class HeadlessDwgConverter:
     def _append_search_layer(self, page: Any, items: list[_SearchText], sheet: _Sheet) -> None:
         """Добавляет скрытые Unicode-глифы непосредственно у CAD-надписей."""
 
+        if id(sheet) in self._text_runs:
+            from .pdf_text import write_text
+            write_text(page, self._text_runs.pop(id(sheet)), self._page_transforms[id(sheet)])
+            return
         font = next((font for font in self._font_files if font.suffix.casefold() in {".ttf", ".otf"}), self._fallback_font())
         if font is None:
             self._log("Не найден TTF для поискового слоя: PDF останется векторным, но поиск не гарантирован")

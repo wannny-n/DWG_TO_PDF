@@ -5,8 +5,10 @@ from io import BytesIO
 import struct
 from types import MethodType
 from typing import Any, Callable
+from functools import lru_cache
 
 
+@lru_cache(maxsize=8)
 def ole_image(data: bytes) -> Any:
     """Читает сохранённое представление OLE, не запуская встроенный документ."""
     import olefile
@@ -72,6 +74,44 @@ def prepare_proxy_entities(document: Any, warn: Callable[[str], None]) -> None:
     from ezdxf.lldxf import const
     from ezdxf.math import Vec3
 
+    # ezdxf intentionally treats OLE2FRAME as non-copyable. INSERT expansion
+    # therefore drops embedded logos. Supply a drawing-only copy/transform
+    # adapter; the stored OLE payload remains unchanged and is never executed.
+    from ezdxf.entities import factory
+    from ezdxf.math import Matrix44, BoundingBox
+    from ezdxf.lldxf.types import DXFVertex
+    import copy
+
+    def bind_ole(entity):
+        entity.copy = MethodType(copy_ole,entity)
+        entity.transform = MethodType(transform_ole,entity)
+
+    def copy_ole(entity,copy_strategy=None):
+        result = factory.new('OLE2FRAME',dxfattribs={k:v for k,v in entity.dxf.all_existing_dxf_attribs().items()
+                                                  if k not in ('handle','owner')})
+        result.doc = entity.doc
+        result.acdb_ole2frame = copy.deepcopy(entity.acdb_ole2frame)
+        result._pdf_ole_box = entity._pdf_ole_box
+        result._pdf_ole_matrix = entity._pdf_ole_matrix.copy()
+        result.set_source_of_copy(entity)
+        bind_ole(result)
+        return result
+
+    def transform_ole(entity,matrix):
+        entity._pdf_ole_matrix @= matrix
+        box=entity._pdf_ole_box
+        bounds=BoundingBox(entity._pdf_ole_matrix.transform_vertices(box.rect_vertices()))
+        entity.acdb_ole2frame = type(entity.acdb_ole2frame)(
+            DXFVertex(tag.code,bounds.extmin if tag.code==10 else bounds.extmax)
+            if tag.code in (10,11) else tag for tag in entity.acdb_ole2frame)
+        return entity
+
+    for entity in list(document.entitydb.values()):
+        if entity.dxftype()=='OLE2FRAME' and entity.bbox().has_data:
+            entity._pdf_ole_box = entity.bbox()
+            entity._pdf_ole_matrix = Matrix44()
+            bind_ole(entity)
+
     class CompatibleProxyGraphic(ProxyGraphic):
         repaired = False
 
@@ -105,7 +145,9 @@ def prepare_proxy_entities(document: Any, warn: Callable[[str], None]) -> None:
                 return polyface
 
     def cached_entities(entity: Any) -> Any:
-        return iter(entity._pdf_proxy_entities)
+        # INSERT.virtual_entities() transforms returned entities in place.
+        # Never expose the cached originals to bbox, nested INSERTs or rendering.
+        return (primitive.copy() for primitive in entity._pdf_proxy_entities)
 
     for entity in list(document.entitydb.values()):
         if entity.dxftype() != 'ACAD_PROXY_ENTITY' or not entity.proxy_graphic:

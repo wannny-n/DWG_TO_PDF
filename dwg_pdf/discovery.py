@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable
+import re
+
+
+def natural_key(path: Path) -> tuple:
+    return tuple((0,int(part)) if part.isdigit() else (1,part.casefold())
+                 for part in re.split(r'(\d+)',path.name))
 
 
 def discover_dwg_files(files: Iterable[Path], folders: Iterable[Path]) -> list[Path]:
@@ -28,4 +34,4 @@ def discover_dwg_files(files: Iterable[Path], folders: Iterable[Path]) -> list[P
         for candidate in folder.rglob("*"):
             add(candidate)
 
-    return sorted(found.values(), key=lambda path: (path.name.casefold(), str(path).casefold()))
+    return sorted(found.values(), key=lambda path: (natural_key(path), str(path).casefold()))

@@ -32,6 +32,7 @@ done
   --add-data "assets/GOST2304A.ttf:assets" \
   --collect-all ezdxf \
   --collect-all pymupdf \
+  --collect-all tkinterdnd2 \
   "${TK_BINARIES[@]}" \
   main.py
 cp DISTRIBUTION.md dist/DWG_Sheet_Scanner/README.md

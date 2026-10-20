@@ -46,6 +46,7 @@ class RunSettings:
     merge_to_one_pdf: bool = False
     combined_pdf: Optional[Path] = None
     wait_timeout_seconds: int = 600
+    selected_sheets: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 @dataclass

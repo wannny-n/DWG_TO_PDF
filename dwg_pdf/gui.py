@@ -10,7 +10,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .discovery import discover_dwg_files
+from .discovery import discover_dwg_files, natural_key
 from .models import ConversionJob, JobStatus, RunSettings
 from .oda_setup import (
     OdaDownloadResult,
@@ -30,13 +30,16 @@ class App(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master, padding=16)
         self.master = master
-        self.master.title("DWG Sheet Scanner — автономный PDF")
+        self.master.title("Печать DWG в PDF")
         self.master.minsize(1080, 650)
         self.grid(sticky="nsew")
         master.columnconfigure(0, weight=1)
         master.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(0, weight=1)
+        self._selected_sheets: dict[str, tuple[int, ...]] = {}
+        self.sort_mode = tk.StringVar(value='По нумерации')
+        self._drag_iid = ''
 
         self._files: list[Path] = []
         self._folders: list[Path] = []
@@ -63,40 +66,50 @@ class App(ttk.Frame):
         self._build_settings()
         self._build_queue()
         self._build_footer()
+        try:
+            from tkinterdnd2 import DND_FILES
+            self.tree.drop_target_register(DND_FILES)
+            self.tree.dnd_bind('<<Drop>>', self._drop_files)
+        except (AttributeError, tk.TclError, ImportError):
+            pass
         self.after(100, self._drain_events)
 
     def _build_settings(self) -> None:
-        group = ttk.LabelFrame(self, text="Источник и автономный экспорт", padding=12)
-        group.grid(row=0, column=0, sticky="ew")
+        group = ttk.LabelFrame(self, text="Настройки печати", padding=10)
+        group.grid(row=2, column=0, sticky="ew", pady=(10,0))
         group.columnconfigure(1, weight=1)
-        rows = [
-            ("Папка результата", self.output_dir, self._choose_output),
-            ("ODA File Converter (бесплатный DWG-читатель)", self.converter_exe, self._choose_converter),
-            ("CAD-шрифты TTF/SHX (; через точку с запятой)", self.font_file, self._choose_font),
-            ("Общий PDF", self.combined_pdf, self._choose_combined),
-        ]
-        for row, (label, variable, action) in enumerate(rows):
-            ttk.Label(group, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
-            ttk.Entry(group, textvariable=variable).grid(row=row, column=1, sticky="ew", pady=3)
-            if action:
-                ttk.Button(group, text="Выбрать…", command=action).grid(row=row, column=2, padx=(8, 0), pady=3)
-        oda_controls = ttk.Frame(group)
-        oda_controls.grid(row=4, column=1, sticky="w", pady=(6, 0))
-        self.download_oda_button = ttk.Button(oda_controls, text="Скачать ODA для этой ОС", command=self._download_oda)
-        self.download_oda_button.pack(side="left")
-        self.detect_oda_button = ttk.Button(oda_controls, text="Найти ODA", command=self._detect_oda)
-        self.detect_oda_button.pack(side="left", padx=6)
-        ttk.Label(
-            group,
-            text="Для точных надписей добавьте исходные TTF/SHX.",
-        ).grid(row=5, column=1, sticky="w")
-        ttk.Checkbutton(group, text="Искать рамки в ModelSpace", variable=self.include_model).grid(row=6, column=1, sticky="w")
-        ttk.Checkbutton(group, text="Печатать готовые Layout", variable=self.include_layouts).grid(row=7, column=1, sticky="w")
-        ttk.Checkbutton(group, text="Объединить все выбранные DWG в один PDF", variable=self.merge).grid(row=8, column=1, sticky="w")
+        for row,(label,variable,action) in enumerate([
+                ('Папка с PDF',self.output_dir,self._choose_output),
+                ('Общий PDF',self.combined_pdf,self._choose_combined)]):
+            ttk.Label(group,text=label).grid(row=row,column=0,sticky='w',padx=(0,8))
+            ttk.Entry(group,textvariable=variable).grid(row=row,column=1,sticky='ew',pady=2)
+            ttk.Button(group,text='Выбрать…',command=action).grid(row=row,column=2,padx=(8,0))
+        ttk.Checkbutton(group,text='Собрать выбранные DWG в один PDF',variable=self.merge).grid(row=2,column=1,sticky='w')
+        self.advanced = ttk.LabelFrame(group,text='Для продвинутых пользователей',padding=8)
+        self.advanced.grid(row=4,column=0,columnspan=3,sticky='ew',pady=(6,0))
+        self.advanced.columnconfigure(1,weight=1)
+        for row,(label,variable,action) in enumerate([
+                ('DWG-reader',self.converter_exe,self._choose_converter),
+                ('Шрифт КРУС-Запад (TTF/SHX)',self.font_file,self._choose_font)]):
+            ttk.Label(self.advanced,text=label).grid(row=row,column=0,sticky='w',padx=(0,8))
+            ttk.Entry(self.advanced,textvariable=variable).grid(row=row,column=1,sticky='ew')
+            ttk.Button(self.advanced,text='Выбрать…',command=action).grid(row=row,column=2,padx=(8,0))
+        controls = ttk.Frame(self.advanced)
+        controls.grid(row=2,column=1,sticky='w',pady=(6,0))
+        self.download_oda_button = ttk.Button(controls,text='Скачать DWG-reader',command=self._download_oda)
+        self.download_oda_button.pack(side='left')
+        self.detect_oda_button = ttk.Button(controls,text='Найти DWG-reader',command=self._detect_oda)
+        self.detect_oda_button.pack(side='left',padx=6)
+        ttk.Label(self.advanced,text='Для точного текста PDF укажите TTF/SHX проекта (несколько — через ;).').grid(row=3,column=1,sticky='w')
+        ttk.Checkbutton(self.advanced,text='Искать рамки в модели',variable=self.include_model).grid(row=4,column=1,sticky='w')
+        ttk.Checkbutton(self.advanced,text='Искать рамки на листах',variable=self.include_layouts).grid(row=5,column=1,sticky='w')
+        self.advanced.grid_remove()
+        self.advanced_button = ttk.Button(group,text='Для продвинутых пользователей ▸',command=self._toggle_advanced)
+        self.advanced_button.grid(row=3,column=1,sticky='w',pady=(4,0))
 
     def _build_queue(self) -> None:
-        group = ttk.LabelFrame(self, text="Очередь DWG", padding=12)
-        group.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
+        group = ttk.LabelFrame(self, text="Структура проекта (последовательность печати)", padding=12)
+        group.grid(row=0, column=0, sticky="nsew")
         group.rowconfigure(1, weight=1)
         group.columnconfigure(0, weight=1)
         controls = ttk.Frame(group)
@@ -104,6 +117,11 @@ class App(ttk.Frame):
         ttk.Button(controls, text="Добавить DWG…", command=self._choose_files).pack(side="left")
         ttk.Button(controls, text="Добавить папку…", command=self._choose_folder).pack(side="left", padx=6)
         ttk.Button(controls, text="Очистить", command=self._clear).pack(side="left")
+        ttk.Button(controls,text='Выбрать листы…',command=self._choose_sheets).pack(side='left',padx=6)
+        sort = ttk.Combobox(controls,textvariable=self.sort_mode,values=['По нумерации','По алфавиту','Вручную'],state='readonly',width=16)
+        sort.pack(side='left',padx=8)
+        sort.bind('<<ComboboxSelected>>',lambda e:self._sort_queue())
+        ttk.Label(controls,text='Перетащите DWG или папку. Строки можно менять местами.').pack(side='left')
 
         columns = ("number", "file", "folder", "status", "sheets", "pdf", "message")
         self.tree = ttk.Treeview(group, columns=columns, show="headings", height=15)
@@ -116,11 +134,18 @@ class App(ttk.Frame):
         scrollbar = ttk.Scrollbar(group, orient="vertical", command=self.tree.yview)
         scrollbar.grid(row=1, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scrollbar.set)
+        horizontal = ttk.Scrollbar(group,orient='horizontal',command=self.tree.xview)
+        horizontal.grid(row=2,column=0,sticky='ew')
+        self.tree.configure(xscrollcommand=horizontal.set)
+        self.tree.bind('<ButtonPress-1>',self._begin_drag)
+        self.tree.bind('<B1-Motion>',self._move_drag)
+        self.tree.bind('<ButtonRelease-1>',self._end_drag)
+        self.tree.bind('<Double-1>',lambda e:self._choose_sheets())
 
     def _build_footer(self) -> None:
         group = ttk.Frame(self, padding=(0, 12, 0, 0))
         group.grid(row=3, column=0, sticky="ew")
-        self.start_button = ttk.Button(group, text="▶ Сканировать и создать PDF", command=self._start)
+        self.start_button = ttk.Button(group, text="▶ Печать в PDF", command=self._start)
         self.start_button.pack(side="left")
         self.status = tk.StringVar(value="Добавьте DWG или папку с DWG")
         ttk.Label(group, textvariable=self.status).pack(side="left", padx=12)
@@ -139,14 +164,97 @@ class App(ttk.Frame):
         self.log.grid(row=5, column=0, sticky="ew")
 
     def _choose_files(self) -> None:
-        if self._running:
+        if self._running or self._scanning:
             return
         selected = filedialog.askopenfilenames(title="Выберите DWG", filetypes=[("DWG", "*.dwg")])
         self._files.extend(Path(item) for item in selected)
         self._refresh_queue()
 
+    def _toggle_advanced(self) -> None:
+        if self.advanced.winfo_manager():
+            self.advanced.grid_remove()
+            self.advanced_button.configure(text='Для продвинутых пользователей ▸')
+        else:
+            self.advanced.grid()
+            self.advanced_button.configure(text='Для продвинутых пользователей ▾')
+
+    def _drop_files(self, event):
+        if self._running or self._scanning:
+            return 'none'
+        for item in self.master.tk.splitlist(event.data):
+            path = Path(item)
+            if path.is_dir():
+                self._folders.append(path)
+            elif path.suffix.lower() == '.dwg':
+                self._files.append(path)
+        self.merge.set(True)
+        self._refresh_queue()
+        return 'copy'
+
+    def _sort_queue(self) -> None:
+        if self._running or self._scanning:
+            return
+        if self.sort_mode.get() != 'Вручную':
+            self._queued_sources.sort(key=natural_key if self.sort_mode.get()=='По нумерации' else lambda p:p.name.casefold())
+        for index,path in enumerate(self._queued_sources):
+            self.tree.move(str(path),'',index)
+            values=list(self.tree.item(str(path),'values'));values[0]=index+1
+            self.tree.item(str(path),values=values)
+
+    def _begin_drag(self,event) -> None:
+        self._drag_iid=self.tree.identify_row(event.y) if not self._running and not self._scanning else ''
+
+    def _move_drag(self,event) -> None:
+        target=self.tree.identify_row(event.y)
+        if self._drag_iid and target and target!=self._drag_iid:
+            self.tree.move(self._drag_iid,'',self.tree.index(target))
+            self.sort_mode.set('Вручную')
+            self._queued_sources=[Path(iid) for iid in self.tree.get_children()]
+            self._sort_queue()
+
+    def _end_drag(self,event) -> None:
+        self._drag_iid=''
+
+    def _choose_sheets(self) -> None:
+        if self._running or self._scanning:
+            return
+        chosen=self.tree.selection()
+        if not chosen:
+            chosen=self.tree.get_children()[:1]
+        if not chosen:
+            messagebox.showinfo('Выбор листов','Сначала добавьте DWG в структуру проекта.')
+            return
+        source=Path(chosen[0])
+        converter=Path(self.converter_exe.get()) if self.converter_exe.get().strip() else None
+        fonts=self._font_paths()
+        model,layouts=self.include_model.get(),self.include_layouts.get()
+        self._scanning=True
+        self._run_started=time.monotonic()
+        self.start_button.state(['disabled'])
+        self._set_progress(0,'Поиск листов для выбора')
+        def inspect():
+            from .headless import HeadlessDwgConverter
+            try:
+                runner=HeadlessDwgConverter(converter,fonts,lambda m:self._events.put(('log',m)))
+                catalog=runner.inspect_sheets(source,model,layouts)
+                self._events.put(('catalog',(source,catalog)))
+            except Exception as error:
+                self._events.put(('catalog_error',str(error)))
+        threading.Thread(target=inspect,daemon=True).start()
+
+    def _show_catalog(self,source,catalog) -> None:
+        from .sheet_picker import SheetPicker
+        if not catalog:
+            messagebox.showinfo('Выбор листов','Не найдены рамки или область печати. Задайте окно печати в CAD либо полилинию на слое PDF_PRINT.')
+            return
+        def accept(numbers):
+            self._selected_sheets[str(source.resolve())]=tuple(numbers)
+            self.tree.set(str(source),'message',f'Выбрано листов: {len(numbers)} из {len(catalog)}')
+            self._set_progress(0,'Листы выбраны')
+        SheetPicker(self.master,source,catalog,self._selected_sheets.get(str(source.resolve())),accept)
+
     def _choose_folder(self) -> None:
-        if self._running:
+        if self._running or self._scanning:
             return
         selected = filedialog.askdirectory(title="Выберите папку с DWG")
         if selected:
@@ -177,11 +285,11 @@ class App(ttk.Frame):
         detected = find_installed_converter()
         if detected:
             self.converter_exe.set(str(detected))
-            self._append_log(f"Найден ODA File Converter: {detected}")
+            self._append_log(f"Найден DWG-reader: {detected}")
             return
         messagebox.showinfo(
-            "ODA не найден",
-            "Нажмите «Скачать ODA для этой ОС» или укажите ODAFileConverter вручную.",
+            "DWG-reader не найден",
+            "Нажмите «Скачать DWG-reader» или укажите ODAFileConverter вручную.",
         )
 
     def _download_oda(self) -> None:
@@ -234,10 +342,11 @@ class App(ttk.Frame):
             self.combined_pdf.set(selected)
 
     def _clear(self) -> None:
-        if self._running:
+        if self._running or self._scanning:
             return
         self._files.clear()
         self._folders.clear()
+        self._selected_sheets.clear()
         self._refresh_queue()
 
     def _sources(self) -> list[Path]:
@@ -264,6 +373,12 @@ class App(ttk.Frame):
     def _show_sources(self, generation: int, sources: list[Path]) -> None:
         if generation != self._scan_generation:
             return
+        if self.sort_mode.get() == 'Вручную':
+            sources = [p for p in self._queued_sources if p in sources] + [p for p in sources if p not in self._queued_sources]
+        elif self.sort_mode.get() == 'По алфавиту':
+            sources.sort(key=lambda p:p.name.casefold())
+        else:
+            sources.sort(key=natural_key)
         self._queued_sources = sources
         self._scanning = False
         self.start_button.state(["!disabled"])
@@ -292,6 +407,7 @@ class App(ttk.Frame):
             experimental_fallback=True,
             merge_to_one_pdf=self.merge.get(),
             combined_pdf=Path(self.combined_pdf.get()).expanduser(),
+            selected_sheets=dict(self._selected_sheets),
         )
         self._running = True
         self._run_started = time.monotonic()
@@ -329,6 +445,16 @@ class App(ttk.Frame):
                     self._set_progress(*value)
                 elif kind == "sources":
                     self._show_sources(*value)
+                elif kind == 'catalog':
+                    self._scanning = False
+                    self.start_button.state(['!disabled'])
+                    self.status.set('Выберите листы для печати')
+                    self._show_catalog(*value)
+                elif kind == 'catalog_error':
+                    self._scanning = False
+                    self.start_button.state(['!disabled'])
+                    self._set_progress(0,'Не удалось прочитать листы')
+                    messagebox.showerror('Выбор листов',str(value))
                 elif kind == "scan_error":
                     generation, detail = value
                     if generation == self._scan_generation:
@@ -392,7 +518,7 @@ class App(ttk.Frame):
             return
         messagebox.showinfo(
             "Установите ODA",
-            "Установщик ODA открыт. После завершения нажмите «Найти ODA».",
+            "Установщик ODA открыт. После завершения нажмите «Найти DWG-reader».",
         )
 
     def _finish_oda_download(self) -> None:
@@ -415,6 +541,7 @@ class App(ttk.Frame):
 def run() -> None:
     """Создаёт главное окно только при явном запуске, что облегчает тестирование."""
 
-    root = tk.Tk()
+    from tkinterdnd2 import TkinterDnD
+    root = TkinterDnD.Tk()
     App(root)
     root.mainloop()

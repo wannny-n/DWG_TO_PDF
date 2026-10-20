@@ -21,6 +21,7 @@ python -m PyInstaller ^
   --add-data "assets\GOST2304A.ttf;assets" ^
   --collect-all ezdxf ^
   --collect-all pymupdf ^
+  --collect-all tkinterdnd2 ^
   main.py
 if errorlevel 1 goto failed
 copy /Y DISTRIBUTION.md dist\DWG_Sheet_Scanner\README.md >nul
