@@ -105,7 +105,9 @@ def write_text(page: Any, runs: list[TextRun], placement: Any) -> None:
             page.insert_font(fontname=name, fontfile=str(run.font))
             registered[run.font] = name
         point = pymupdf.Point(p.x, p.y)
-        morph = pymupdf.Matrix(x.x, x.y, -y.x, -y.y, 0, 0)
+        # Shape's morph operates in PDF coordinates (Y up), whereas placement
+        # returns page coordinates (Y down). Convert both basis vectors.
+        morph = pymupdf.Matrix(x.x, -x.y, y.x, -y.y, 0, 0)
         shape.insert_text(point, run.text, fontname=registered[run.font], fontsize=run.fontsize,
                           color=run.color, morph=(point, morph), render_mode=0 if run.visible else 3)
     shape.commit()

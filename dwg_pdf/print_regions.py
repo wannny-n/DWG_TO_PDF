@@ -2,13 +2,21 @@
 from math import hypot
 
 
-def paper_dimensions(width, height, sizes):
+def paper_dimensions(width, height, sizes, preferred_scale=1):
     a, b = sorted((width, height))
-    best = min(sizes.items(), key=lambda item: abs(a/item[1][0]-1) + abs(b/item[1][1]-1))
-    name, (pa, pb) = best
-    if max(abs(a/pa-1), abs(b/pb-1)) > .025:
-        return None
-    return name, (pb, pa) if width > height else (pa, pb)
+    # Check actual dimensions at conventional CAD scales, not aspect ratio
+    # alone: an arbitrary rectangle must still require a saved print window.
+    candidates = []
+    for scale in (1, 2, 2.5, 4, 5, 10, 20, 25, 40, 50, 100, 200, 250, 400, 500, 1000):
+        for name, (pa, pb) in sizes.items():
+            error = max(abs(a/(scale*pa)-1), abs(b/(scale*pb)-1))
+            if error <= .025:
+                priority = 0 if scale == 1 else 1 if scale == preferred_scale else 2
+                candidates.append((priority, error, scale, name, pa, pb))
+    if candidates:
+        _, _, _, name, pa, pb = min(candidates)
+        return name, (pb, pa) if width > height else (pa, pb)
+    return None
 
 
 def loose_rectangles(model):

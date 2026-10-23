@@ -159,9 +159,8 @@ class HeadlessDwgConverter:
                     raise ValueError('Набор листов изменился. Повторите выбор листов.')
                 sheets = [sheets[index-1] for index in selection]
             if not sheets:
-                raise RuntimeError(
-                    "Не найдены листы: в DWG нет Layout и не распознаны рамки ModelSpace"
-                )
+                from .errors import NO_SHEETS_MESSAGE
+                raise RuntimeError(NO_SHEETS_MESSAGE)
 
             self._report(18, "Подготовка текста")
             search_items: list[_SearchText] = []
@@ -430,7 +429,7 @@ class HeadlessDwgConverter:
         for insert in document.modelspace().query("INSERT"):
             name = str(insert.dxf.name).upper()
             named_format = format_from_name(name)
-            if not any(marker in name for marker in ("ЛИСТ", "РАМК", "SHEET", "FRAME")):
+            if not any(marker in name for marker in ("ЛИСТ", "РАМК", "ФОРМАТ", "SHEET", "FRAME")):
                 continue
             if named_format:
                 format_name = named_format
@@ -450,7 +449,7 @@ class HeadlessDwgConverter:
                 continue
             if named_format is None:
                 from .print_regions import paper_dimensions
-                inferred = paper_dimensions(width, height, self._PAPER_SIZES)
+                inferred = paper_dimensions(width, height, self._PAPER_SIZES, document.header.get('$DIMSCALE', 1))
                 if inferred is not None:
                     format_name = inferred[0]
                 elif format_name is None:
@@ -481,7 +480,7 @@ class HeadlessDwgConverter:
             signature = tuple(round(v) for v in coords)
             if signature in seen:
                 return
-            size = paper_dimensions(x2-x1,y2-y1,self._PAPER_SIZES)
+            size = paper_dimensions(x2-x1,y2-y1,self._PAPER_SIZES, document.header.get('$DIMSCALE', 1))
             if size is None:
                 return
             seen.add(signature)

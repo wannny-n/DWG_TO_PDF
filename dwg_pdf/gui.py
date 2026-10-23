@@ -38,6 +38,7 @@ class App(ttk.Frame):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
         self._selected_sheets: dict[str, tuple[int, ...]] = {}
+        self._failures: dict[str, str] = {}
         self.sort_mode = tk.StringVar(value='По нумерации')
         self._drag_iid = ''
 
@@ -140,7 +141,38 @@ class App(ttk.Frame):
         self.tree.bind('<ButtonPress-1>',self._begin_drag)
         self.tree.bind('<B1-Motion>',self._move_drag)
         self.tree.bind('<ButtonRelease-1>',self._end_drag)
-        self.tree.bind('<Double-1>',lambda e:self._choose_sheets())
+        self.tree.bind('<Double-1>',lambda e:self._open_row())
+
+    def _open_row(self) -> None:
+        chosen = self.tree.selection()
+        if chosen and chosen[0] in self._failures:
+            self._show_errors({chosen[0]: self._failures[chosen[0]]})
+        else:
+            self._choose_sheets()
+
+    def _show_errors(self, failures: dict[str, str]) -> None:
+        """One copyable, scrollable window per batch; never block the worker."""
+        from tkinter.scrolledtext import ScrolledText
+        window = tk.Toplevel(self.master)
+        window.title('Ошибки печати — подробности')
+        window.transient(self.master)
+        window.geometry('760x460')
+        window.minsize(520, 320)
+        body = ScrolledText(window, wrap='word', padx=14, pady=12)
+        body.pack(fill='both', expand=True)
+        detail = '\n\n' + ('\n\n' + '─' * 40 + '\n\n').join(
+            f'{Path(source).name}\n\n{message}' for source, message in failures.items())
+        body.insert('1.0', detail.lstrip())
+        body.configure(state='disabled')
+        controls = ttk.Frame(window, padding=10)
+        controls.pack(fill='x')
+        def copy():
+            window.clipboard_clear()
+            window.clipboard_append(detail.lstrip())
+        ttk.Button(controls, text='Копировать', command=copy).pack(side='left')
+        ttk.Button(controls, text='Закрыть', command=window.destroy).pack(side='right')
+        window.bind('<Escape>', lambda e: window.destroy())
+        window.lift()
 
     def _build_footer(self) -> None:
         group = ttk.Frame(self, padding=(0, 12, 0, 0))
@@ -245,7 +277,8 @@ class App(ttk.Frame):
     def _show_catalog(self,source,catalog) -> None:
         from .sheet_picker import SheetPicker
         if not catalog:
-            messagebox.showinfo('Выбор листов','Не найдены рамки или область печати. Задайте окно печати в CAD либо полилинию на слое PDF_PRINT.')
+            from .errors import NO_SHEETS_MESSAGE
+            self._show_errors({str(source): NO_SHEETS_MESSAGE})
             return
         def accept(numbers):
             self._selected_sheets[str(source.resolve())]=tuple(numbers)
@@ -347,6 +380,7 @@ class App(ttk.Frame):
         self._files.clear()
         self._folders.clear()
         self._selected_sheets.clear()
+        self._failures.clear()
         self._refresh_queue()
 
     def _sources(self) -> list[Path]:
@@ -410,6 +444,7 @@ class App(ttk.Frame):
             selected_sheets=dict(self._selected_sheets),
         )
         self._running = True
+        self._failures.clear()
         self._run_started = time.monotonic()
         self._set_progress(0, "Подготовка")
         self.start_button.state(["disabled"])
@@ -469,6 +504,8 @@ class App(ttk.Frame):
                     summary = value
                     self.status.set(f"Готово: {summary.succeeded}; предупреждений: {summary.warnings}; ошибок: {summary.failed}")
                     self._set_progress(100, "Обработка завершена")
+                    if self._failures:
+                        self._show_errors(dict(self._failures))
                 elif kind == "fatal":
                     self._running = False
                     self.start_button.state(["!disabled"])
@@ -527,6 +564,10 @@ class App(ttk.Frame):
 
     def _show_job(self, job: ConversionJob) -> None:
         iid = str(job.source)
+        if job.status == JobStatus.FAILED:
+            self._failures[iid] = job.message
+        else:
+            self._failures.pop(iid, None)
         values = (job.position, job.source.name, str(job.source.parent), job.status.value, job.sheet_count, job.output_pdf.name if job.output_pdf else "", job.message)
         if self.tree.exists(iid):
             self.tree.item(iid, values=values)
