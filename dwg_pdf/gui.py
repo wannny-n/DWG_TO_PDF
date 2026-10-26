@@ -568,7 +568,13 @@ class App(ttk.Frame):
             self._failures[iid] = job.message
         else:
             self._failures.pop(iid, None)
-        values = (job.position, job.source.name, str(job.source.parent), job.status.value, job.sheet_count, job.output_pdf.name if job.output_pdf else "", job.message)
+        # Treeview rows have a fixed height: multiline cell text spills into
+        # neighbouring rows. Keep full failures separately for the detail window.
+        lines = job.message.splitlines()
+        message = ' '.join(lines)
+        if job.status == JobStatus.FAILED and len(lines) > 1:
+            message = f'{lines[0]} Подробности — двойной щелчок.'
+        values = (job.position, job.source.name, str(job.source.parent), job.status.value, job.sheet_count, job.output_pdf.name if job.output_pdf else "", message)
         if self.tree.exists(iid):
             self.tree.item(iid, values=values)
 
