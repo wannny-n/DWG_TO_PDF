@@ -39,6 +39,8 @@ class App(ttk.Frame):
         self.rowconfigure(0, weight=1)
         self._selected_sheets: dict[str, tuple[int, ...]] = {}
         self._failures: dict[str, str] = {}
+        self._messages: dict[str, str] = {}
+        self._row_moved = False
         self.sort_mode = tk.StringVar(value='По нумерации')
         self._drag_iid = ''
 
@@ -141,7 +143,34 @@ class App(ttk.Frame):
         self.tree.bind('<ButtonPress-1>',self._begin_drag)
         self.tree.bind('<B1-Motion>',self._move_drag)
         self.tree.bind('<ButtonRelease-1>',self._end_drag)
-        self.tree.bind('<Double-1>',lambda e:self._open_row())
+        self.tree.bind('<Double-1>',self._double_click_row)
+        self.tree.bind('<Configure>',lambda e:self.after_idle(self._refresh_messages))
+
+    def _double_click_row(self, event) -> None:
+        if self.tree.identify_column(event.x) != '#7':
+            self._open_row()
+
+    def _queue_message(self, message: str) -> str:
+        from tkinter import font
+        text = ' '.join(message.splitlines())
+        style = ttk.Style(self)
+        face = font.Font(self, font=style.lookup('Treeview', 'font') or 'TkDefaultFont')
+        width = max(0, self.tree.column('message', 'width') - 12)
+        if face.measure(text) <= width:
+            return text
+        low, high = 0, len(text)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if face.measure(text[:middle] + '…') <= width:
+                low = middle
+            else:
+                high = middle - 1
+        return text[:low] + '…' if face.measure('…') <= width else ''
+
+    def _refresh_messages(self) -> None:
+        for iid, message in self._messages.items():
+            if self.tree.exists(iid):
+                self.tree.set(iid, 'message', self._queue_message(message))
 
     def _open_row(self) -> None:
         chosen = self.tree.selection()
@@ -234,11 +263,13 @@ class App(ttk.Frame):
             self.tree.item(str(path),values=values)
 
     def _begin_drag(self,event) -> None:
+        self._row_moved = False
         self._drag_iid=self.tree.identify_row(event.y) if not self._running and not self._scanning else ''
 
     def _move_drag(self,event) -> None:
         target=self.tree.identify_row(event.y)
         if self._drag_iid and target and target!=self._drag_iid:
+            self._row_moved = True
             self.tree.move(self._drag_iid,'',self.tree.index(target))
             self.sort_mode.set('Вручную')
             self._queued_sources=[Path(iid) for iid in self.tree.get_children()]
@@ -246,6 +277,10 @@ class App(ttk.Frame):
 
     def _end_drag(self,event) -> None:
         self._drag_iid=''
+        self.after_idle(self._refresh_messages)
+        iid = self.tree.identify_row(event.y)
+        if not self._row_moved and self.tree.identify_column(event.x) == '#7' and iid in self._failures:
+            self._show_errors({iid: self._failures[iid]})
 
     def _choose_sheets(self) -> None:
         if self._running or self._scanning:
@@ -414,6 +449,8 @@ class App(ttk.Frame):
         else:
             sources.sort(key=natural_key)
         self._queued_sources = sources
+        self._messages.clear()
+        self._failures.clear()
         self._scanning = False
         self.start_button.state(["!disabled"])
         self.tree.delete(*self.tree.get_children())
@@ -504,8 +541,6 @@ class App(ttk.Frame):
                     summary = value
                     self.status.set(f"Готово: {summary.succeeded}; предупреждений: {summary.warnings}; ошибок: {summary.failed}")
                     self._set_progress(100, "Обработка завершена")
-                    if self._failures:
-                        self._show_errors(dict(self._failures))
                 elif kind == "fatal":
                     self._running = False
                     self.start_button.state(["!disabled"])
@@ -570,10 +605,8 @@ class App(ttk.Frame):
             self._failures.pop(iid, None)
         # Treeview rows have a fixed height: multiline cell text spills into
         # neighbouring rows. Keep full failures separately for the detail window.
-        lines = job.message.splitlines()
-        message = ' '.join(lines)
-        if job.status == JobStatus.FAILED and len(lines) > 1:
-            message = f'{lines[0]} Подробности — двойной щелчок.'
+        self._messages[iid] = job.message
+        message = self._queue_message(job.message)
         values = (job.position, job.source.name, str(job.source.parent), job.status.value, job.sheet_count, job.output_pdf.name if job.output_pdf else "", message)
         if self.tree.exists(iid):
             self.tree.item(iid, values=values)
