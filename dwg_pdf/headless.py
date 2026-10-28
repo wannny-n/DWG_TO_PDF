@@ -426,11 +426,23 @@ class HeadlessDwgConverter:
 
         frames: list[tuple[float, float, _Sheet]] = []
         seen: set[tuple[int, int, int, int]] = set()
+        block_formats: dict[str, str | None] = {}
         for insert in document.modelspace().query("INSERT"):
             name = str(insert.dxf.name).upper()
             named_format = format_from_name(name)
             if not any(marker in name for marker in ("ЛИСТ", "РАМК", "ФОРМАТ", "SHEET", "FRAME")):
                 continue
+            if named_format is None:
+                if name not in block_formats:
+                    labels = set()
+                    for text in document.blocks.get(insert.dxf.name).query('TEXT MTEXT ATTDEF'):
+                        value = text.plain_text() if text.dxftype() == 'MTEXT' else text.dxf.text
+                        if 'ФОРМАТ' in value.upper() or 'FORMAT' in value.upper():
+                            label = format_from_name(value)
+                            if label:
+                                labels.add(label)
+                    block_formats[name] = next(iter(labels)) if len(labels) == 1 else None
+                named_format = block_formats[name]
             if named_format:
                 format_name = named_format
             elif fallback_format in self._PAPER_SIZES:
@@ -440,7 +452,11 @@ class HeadlessDwgConverter:
             else:
                 format_name = None
             try:
-                box = ezdxf.bbox.extents([insert], fast=False, cache=self._bbox_cache)
+                # Missing CAD fonts may make a legal note extend beyond its
+                # frame. Determine the boundary from geometry, not text width.
+                geometry = [part for part in ezdxf.disassemble.recursive_decompose([insert])
+                            if part.dxftype() not in ('TEXT','MTEXT','ATTRIB','ATTDEF')]
+                box = ezdxf.bbox.extents(geometry or [insert], fast=False, cache=self._bbox_cache)
                 width = float(box.extmax.x - box.extmin.x)
                 height = float(box.extmax.y - box.extmin.y)
             except Exception:
@@ -504,7 +520,19 @@ class HeadlessDwgConverter:
                 box,width,height = saved
                 frames.append((-box.extmax.y,box.extmin.x,_Sheet('Область печати модели',width,height,
                               self.page_format(width,height),frame=box)))
-        result = [sheet for _,_,sheet in sorted(frames,key=lambda entry: entry[:2])]
+        # CAD saves nominally aligned edges with tiny floating point offsets.
+        # Group aligned tops before sorting left to right, so mixed formats and
+        # frames from different entity types share the same stable page order.
+        rows: list[list[Any]] = []
+        for entry in sorted(frames, key=lambda item: item[:2]):
+            if rows:
+                anchor = rows[-1][0]
+                tolerance = min(anchor[2].frame.size.y, entry[2].frame.size.y) * .005
+            if rows and abs(entry[0]-anchor[0]) <= tolerance:
+                rows[-1].append(entry)
+            else:
+                rows.append([entry])
+        result = [sheet for row in rows for _, _, sheet in sorted(row, key=lambda item: item[1])]
         selections = [coords for coords,layer in regions if layer.upper() in ('PDF_PRINT','ПЕЧАТЬ_PDF')]
         if selections:
             chosen = []

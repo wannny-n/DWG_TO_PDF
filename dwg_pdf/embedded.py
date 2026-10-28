@@ -116,6 +116,14 @@ def prepare_proxy_entities(document: Any, warn: Callable[[str], None]) -> None:
         repaired = False
 
         def shell(self, data: bytes) -> Any:
+            result = self._read_shell(data)
+            # A filled black SHELL directly behind its label is a CAD
+            # background mask, not a wireframe mesh. Keep the fill trait until
+            # we can check it against the following text in WCS.
+            result._pdf_background_shell = self.fill and self.true_color == 0
+            return result
+
+        def _read_shell(self, data: bytes) -> Any:
             try:
                 return super().shell(data)
             except EndOfBufferError:
@@ -162,5 +170,40 @@ def prepare_proxy_entities(document: Any, warn: Callable[[str], None]) -> None:
             warn(f'Proxy-объект {entity.dxf.handle}: сохранена доступная часть графики; {error}')
         if parser.repaired:
             warn(f'Proxy-объект {entity.dxf.handle}: геометрия восстановлена; повреждённые атрибуты нормалей пропущены')
-        entity._pdf_proxy_entities = primitives
+        entity._pdf_proxy_entities = restore_proxy_text_masks(primitives)
         entity.__virtual_entities__ = MethodType(cached_entities, entity)
+
+
+def restore_proxy_text_masks(primitives: list[Any]) -> list[Any]:
+    """Restore small filled rectangular backgrounds before proxy TEXT labels.
+
+    Preserve ordinary polyfaces, table borders and black solids. Only a filled
+    background-colour quad immediately enclosing a label becomes a WIPEOUT,
+    which follows the paper background and has no printable boundary.
+    """
+    from ezdxf.entities import factory
+    from ezdxf.math import BoundingBox2d, Vec2
+
+    result = list(primitives)
+    for index, (shell, text) in enumerate(zip(primitives, primitives[1:])):
+        if not getattr(shell, '_pdf_background_shell', False) or text.dxftype() != 'TEXT':
+            continue
+        faces = list(shell.faces())
+        if len(faces) != 1:
+            continue
+        vertices = [v.dxf.location for v in faces[0][:-1]]
+        box = BoundingBox2d(vertices)
+        h = float(text.dxf.height)
+        if h <= 0 or not box.has_data or min(box.size) <= 0:
+            continue
+        if not all(min(abs(v.x-box.extmin.x), abs(v.x-box.extmax.x)) < 1e-6 and
+                   min(abs(v.y-box.extmin.y), abs(v.y-box.extmax.y)) < 1e-6 for v in vertices):
+            continue
+        if (not box.inside(Vec2(text.dxf.insert)) or
+                not .8*h <= box.size.y <= 2*h or box.size.x > h*max(4, 2*len(text.dxf.text))):
+            continue
+        mask = factory.new('WIPEOUT')
+        mask.set_masking_area(vertices)
+        mask.dxf.layer = shell.dxf.layer
+        result[index] = mask
+    return result
