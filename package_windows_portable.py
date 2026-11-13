@@ -34,7 +34,7 @@ def main() -> None:
     shutil.copytree(args.oda_dir, target)
     for name in runtimes:
         shutil.copy2(args.runtime_dir / name, target / name)
-    for name in ('ИНСТРУКЦИЯ.txt', 'ODA_NOTICE.txt'):
+    for name in ('ИНСТРУКЦИЯ.txt', 'ODA_NOTICE.txt', 'XML_ЗАПУСК.txt', 'example-job.xml'):
         shutil.copy2(Path(__file__).resolve().parent / name, args.app_dir / name)
     shutil.copy2(Path(__file__).resolve().parent / 'DISTRIBUTION.md', args.app_dir / 'README.md')
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DwgToPdf version="1">
+  <Sources>
+    <File sheets="1,2">Чертежи\Лист 1.dwg</File>
+    <Folder>Чертежи\Другие листы</Folder>
+  </Sources>
+  <OutputDir>PDF</OutputDir>
+  <Merge>true</Merge>
+  <CombinedPdf>Альбом.pdf</CombinedPdf>
+  <IncludeModelFrames>true</IncludeModelFrames>
+  <IncludeLayouts>true</IncludeLayouts>
+  <Overwrite>false</Overwrite>
+  <!-- Необязательно: <Oda>C:\ODA\ODAFileConverter.exe</Oda> -->
+  <!-- Необязательно: <Fonts><Font>C:\Шрифты\gost.ttf</Font></Fonts> -->
+</DwgToPdf>

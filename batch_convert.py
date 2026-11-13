@@ -53,13 +53,21 @@ def output_path(output_dir: Path, source: Path, overwrite: bool) -> Path:
 def run(arguments: Sequence[str] | None = None) -> int:
     """Выполняет очередь, сохраняет ход после каждого DWG и возвращает код ОС."""
 
-    options = parse_arguments(arguments)
+    return run_options(parse_arguments(arguments))
+
+
+def run_options(options: argparse.Namespace) -> int:
+    xml_job = getattr(options, 'xml_job', False)
     if not options.font:
         options.font = [resource_path("assets", "GOST2304A.ttf")]
-    files = discover_dwg_files(
-        [item for item in options.sources if item.is_file()],
-        [item for item in options.sources if item.is_dir()],
-    )
+    if xml_job:
+        files = list(dict.fromkeys(file for source in options.sources
+                                  for file in discover_dwg_files([source], [source])))
+    else:
+        files = discover_dwg_files(
+            [item for item in options.sources if item.is_file()],
+            [item for item in options.sources if item.is_dir()],
+        )
     if not files:
         print("DWG-файлы не найдены", flush=True)
         return 2
@@ -78,6 +86,7 @@ def run(arguments: Sequence[str] | None = None) -> int:
     else:
         log("Бесплатный векторный экспорт")
         converter = HeadlessDwgConverter(options.oda, options.font, log, timeout_seconds=900)
+        converter.selected_sheets = getattr(options, 'selected_sheets', {})
         engine = "free ODA File Converter + ezdxf + PyMuPDF"
     converter.validate()
     temporary = tempfile.TemporaryDirectory(prefix="dwg_pdf_merge_") if options.merge else None
@@ -88,7 +97,7 @@ def run(arguments: Sequence[str] | None = None) -> int:
         try:
             result = converter.convert(
                 source,
-                output_path(work_dir, source, options.overwrite),
+                output_path(work_dir, source, options.overwrite and not options.merge),
                 include_model_frames=not options.no_model_frames,
                 include_layouts=not options.no_layouts,
             )
@@ -118,7 +127,13 @@ def run(arguments: Sequence[str] | None = None) -> int:
     ]
     combined_pdf: Path | None = None
     if options.merge and successful_pdfs:
-        combined_pdf = output_dir / "DWG_Combined_autonomous.pdf"
+        combined_pdf = getattr(options, 'combined_pdf', None) or output_dir / "DWG_Combined_autonomous.pdf"
+        if xml_job and not options.overwrite:
+            base = combined_pdf
+            index = 2
+            while combined_pdf.exists():
+                combined_pdf = base.with_name(f'{base.stem}_{index}{base.suffix}')
+                index += 1
         merge_pdfs(successful_pdfs, combined_pdf)
         for entry in progress:
             if entry["status"] in {"ok", "warning"}:
