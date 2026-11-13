@@ -38,34 +38,42 @@ def read_xml_job(filename: Path) -> Namespace:
 
     nodes = {}
     allowed = {'Sources','OutputDir','Merge','CombinedPdf','IncludeModelFrames',
-               'IncludeLayouts','Oda','Fonts','Overwrite'}
+               'IncludeLayouts','Oda','Fonts','Overwrite','SortOrder'}
     for node in root:
         if node.tag not in allowed or node.tag in nodes:
             raise ValueError(f'Неизвестный или повторный тег <{node.tag}>')
         nodes[node.tag] = node
     if not {'Sources', 'OutputDir'} <= nodes.keys():
         raise ValueError('Требуются теги <Sources> и <OutputDir>')
-    sources, selected = [], {}
+    sources, selected, excluded = [], {}, {}
     source_group = nodes['Sources']
     if source_group.attrib or not len(source_group):
         raise ValueError('<Sources> должен содержать <File> или <Folder>')
     for node in source_group:
         if node.tag not in ('File', 'Folder'):
             raise ValueError(f'<Sources>: неизвестный тег <{node.tag}>')
-        source = path(scalar(node, ('sheets',) if node.tag == 'File' else ()))
+        source = path(scalar(node, ('sheets', 'excludeSheets') if node.tag == 'File' else ()))
         if node.tag == 'Folder' and not source.is_dir():
             raise ValueError(f'Папка не найдена: {source}')
         if node.tag == 'File' and (not source.is_file() or source.suffix.lower() != '.dwg'):
             raise ValueError(f'DWG-файл не найден: {source}')
         sources.append(source)
-        if 'sheets' in node.attrib:
-            value = node.attrib['sheets'].strip()
+        if 'sheets' in node.attrib and 'excludeSheets' in node.attrib:
+            raise ValueError(f'Задайте либо sheets, либо excludeSheets: {source}')
+        for attribute, selections in (('sheets', selected), ('excludeSheets', excluded)):
+            if attribute not in node.attrib:
+                continue
+            value = node.attrib[attribute].strip()
             if not re.fullmatch(r'[1-9][0-9]*(\s*,\s*[1-9][0-9]*)*', value):
-                raise ValueError('sheets: укажите номера листов через запятую, начиная с 1')
+                raise ValueError(f'{attribute}: укажите номера листов через запятую, начиная с 1')
             numbers = tuple(int(n) for n in value.split(','))
-            if len(numbers) != len(set(numbers)) or str(source) in selected:
+            if len(numbers) != len(set(numbers)) or str(source) in selected or str(source) in excluded:
                 raise ValueError(f'Повторный выбор листов: {source}')
-            selected[str(source)] = numbers
+            selections[str(source)] = numbers
+
+    order = scalar(nodes['SortOrder']).lower() if 'SortOrder' in nodes else 'manual'
+    if order not in ('manual', 'natural', 'alphabetical'):
+        raise ValueError('<SortOrder>: ожидается manual, natural или alphabetical')
 
     output = path(scalar(nodes['OutputDir']))
     merge = flag('Merge', True)
@@ -95,4 +103,5 @@ def read_xml_job(filename: Path) -> Namespace:
                      no_model_frames=not model, no_layouts=not layouts,
                      merge=merge, combined_pdf=combined, overwrite=flag('Overwrite', False),
                      native_exporter=None, use_native_exporter=False,
-                     selected_sheets=selected, xml_job=True)
+                     selected_sheets=selected, excluded_sheets=excluded,
+                     sort_order=order, xml_job=True)

@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Sequence
 
-from dwg_pdf.discovery import discover_dwg_files
+from dwg_pdf.discovery import discover_dwg_files, natural_key
 from dwg_pdf.headless import HeadlessDwgConverter
 from dwg_pdf.native_oda import NativeOdaPdfExporter
 from dwg_pdf.pdf_check import check_pdf, merge_pdfs
@@ -63,6 +63,10 @@ def run_options(options: argparse.Namespace) -> int:
     if xml_job:
         files = list(dict.fromkeys(file for source in options.sources
                                   for file in discover_dwg_files([source], [source])))
+        if options.sort_order == 'natural':
+            files.sort(key=lambda p: (natural_key(p), str(p).casefold()))
+        elif options.sort_order == 'alphabetical':
+            files.sort(key=lambda p: (p.name.casefold(), str(p).casefold()))
     else:
         files = discover_dwg_files(
             [item for item in options.sources if item.is_file()],
@@ -87,6 +91,7 @@ def run_options(options: argparse.Namespace) -> int:
         log("Бесплатный векторный экспорт")
         converter = HeadlessDwgConverter(options.oda, options.font, log, timeout_seconds=900)
         converter.selected_sheets = getattr(options, 'selected_sheets', {})
+        converter.excluded_sheets = getattr(options, 'excluded_sheets', {})
         engine = "free ODA File Converter + ezdxf + PyMuPDF"
     converter.validate()
     temporary = tempfile.TemporaryDirectory(prefix="dwg_pdf_merge_") if options.merge else None

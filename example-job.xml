@@ -4,6 +4,9 @@
     <File sheets="1,2">Чертежи\Лист 1.dwg</File>
     <Folder>Чертежи\Другие листы</Folder>
   </Sources>
+  <!-- manual — порядок тегов; natural — по нумерации; alphabetical — по алфавиту -->
+  <SortOrder>manual</SortOrder>
+  <!-- Вместо sheets можно задать excludeSheets="1,3" у тега File. -->
   <OutputDir>PDF</OutputDir>
   <Merge>true</Merge>
   <CombinedPdf>Альбом.pdf</CombinedPdf>

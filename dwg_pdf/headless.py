@@ -93,6 +93,7 @@ class HeadlessDwgConverter:
         self._sheet_label = ""
         self._text_runs: dict[int, list[Any]] = {}
         self.selected_sheets: dict[str, tuple[int, ...]] = {}
+        self.excluded_sheets: dict[str, tuple[int, ...]] = {}
 
     def _warn(self, message: str) -> None:
         if message not in self._warnings:
@@ -154,6 +155,12 @@ class HeadlessDwgConverter:
             self._report(15, "Поиск листов и рамок")
             sheets = self._detect_sheets(document, include_model_frames, include_layouts, ezdxf)
             selection = self.selected_sheets.get(str(source.resolve()))
+            excluded = self.excluded_sheets.get(str(source.resolve()), ())
+            if excluded:
+                if any(index < 1 or index > len(sheets) for index in excluded):
+                    raise ValueError('В XML указан номер исключаемого листа вне диапазона.')
+                excluded_numbers = set(excluded)
+                sheets = [sheet for number, sheet in enumerate(sheets, 1) if number not in excluded_numbers]
             if selection is not None:
                 if any(index < 1 or index > len(sheets) for index in selection):
                     raise ValueError('Набор листов изменился. Повторите выбор листов.')
